@@ -1,0 +1,183 @@
+CV_testlist <- function(nfold = 5,N){
+  x <- sample(N,N)
+  testlist <- list()
+  for (i in 1:nfold) {
+    ntest <- round(length(x)/(nfold-i+1))
+    testlist[[i]] <- x[1:ntest]
+    x <- x[-(1:ntest)]
+  }
+  testlist
+}
+
+loglh <- function(beta,x,y,k=0,d=1,c){
+  sum(-(x%*%beta)*y + log(1+exp(x%*%beta))) + k*sum((beta[-1]-d*c[-1])^2)
+}
+
+dloglh <- function(beta,x,y,k=0,d=1,c){
+  kk <- c(0,rep(k,length(beta[-1])))
+  -t(x)%*%y + t(x)%*%(exp(x%*%beta)/(1+exp(x%*%beta))) + 2*kk*(beta-d*c)
+}
+
+lloglh <- function(y,p){
+  p <- (p+exp(-700))*(1-exp(-30))
+  sum(-y*log(p) - (1-y)*log(1-p))
+}
+
+LMLE <- function(formula,data){
+  dat0 <- model.frame(formula,data)
+  y <- dat0[,1]
+  n <- length(y)
+  x0 <- rep(1,n)
+  sigma <- c(1,apply(dat0[,-1], 2, sd))
+  sigmaa <- diag(1/sigma)
+  x1 <- as.matrix(cbind(x0,dat0[,-1]))
+  x <- x1%*%sigmaa
+  beta0 <- rep(0,dim(x)[2])
+  center0 <- rep(0,dim(x)[2])
+  
+  betam <- optim(beta0,fn=loglh,gr=dloglh,x=x,y=y,k=0,c=center0,method="BFGS",control = list(reltol=10^-30,maxit=1000))
+  beta <- betam$par
+  beta <- beta/sigma
+  fitvalues <- exp(x1%*%beta)/(1+exp(x1%*%beta))
+  intercept <- beta[1]
+  W <- diag(fitvalues[,1]*(1-fitvalues[,1]))
+  covb <- solve(t(x)%*%W%*%x)
+  bs <- diag(covb)
+  bs <- sqrt(bs)/sigma
+  list(conv=betam$convergence,intercept=intercept,beta=beta,bs=bs,fitvalues=fitvalues[,1])
+}
+
+LRE <- function(formula,data,lambda=NULL,lambdas=c(0,10^seq(-3,5,length=100)),k=10,seed){
+  dat0 <- model.frame(formula,data)
+  y <- dat0[,1]
+  n <- length(y)
+  x0 <- rep(1,n)
+  sigma <- c(1,apply(dat0[,-1], 2, sd))
+  sigmaa <- diag(1/sigma)
+  x1 <- as.matrix(cbind(x0,dat0[,-1]))
+  x <- x1%*%sigmaa
+  beta0 <- rep(0,dim(x)[2])
+  center0 <- rep(0,dim(x)[2])
+  
+  if(is.null(lambda)){
+  cvs <- NULL
+  if(!missing(seed)) set.seed(seed)
+  folds <- CV_testlist(nfold = k,N = n) #Dividing the original data set into k sub-data sets.
+  y_cv <- dat0[,1][unlist(folds)]
+  for (i in lambdas) {
+    predict_values <- NULL
+    for(j in 1:k){
+      fold_test <- dat0[folds[[j]],]      
+      fold_train <- dat0[-folds[[j]],] 
+      
+      tr_y <- fold_train[,1]
+      tr_x0 <- rep(1,length(tr_y))
+      tr_sigma <- c(1,apply(fold_train[,-1],2,sd))
+      tr_sigmaa <- diag(1/tr_sigma)
+      tr_x1 <- as.matrix(cbind(tr_x0,fold_train[,-1]))
+      tr_x <- tr_x1%*%tr_sigmaa
+      tr_beta0 <- rep(0,dim(tr_x)[2])
+      tr_center0 <- rep(0,dim(tr_x)[2])
+      
+      tr_betam <- optim(tr_beta0,fn=loglh,gr=dloglh,x=tr_x,y=tr_y,k=i,c=tr_center0,method="BFGS",control = list(reltol=10^-30,maxit=1000))
+      tr_beta <- tr_betam$par
+      beta <- tr_beta/tr_sigma
+      
+      te_x <- as.matrix(fold_test[,-1])
+      predict_value <- exp(te_x %*% beta[-1] + beta[1])/(1+exp(te_x %*% beta[-1] + beta[1]))
+      predict_values <- c(predict_values,predict_value)
+    }
+    cvi <- lloglh(y=y_cv,p=predict_values) 
+    cvs <- c(cvs,cvi)
+  }
+  lambda <- lambdas[which.min(cvs)]
+  }
+  
+  betam <- optim(beta0,fn=loglh,gr=dloglh,x=x,y=y,k=lambda,c=center0,method="BFGS",control = list(reltol=10^-30,maxit=1000))
+  beta <- betam$par
+  beta <- beta/sigma
+  fitvalues <- exp(x1%*%beta)/(1+exp(x1%*%beta))
+  intercept <- beta[1]
+  W <- diag(fitvalues[,1]*(1-fitvalues[,1]))
+  kk <- c(0,rep(lambda,(dim(x)[2]-1)))
+  H <- solve(t(x)%*%W%*%x + diag(kk))%*%(t(x)%*%W%*%x)
+  covb <- H%*%solve(t(x)%*%W%*%x)%*%t(H)
+  bs <- diag(covb)
+  bs <- sqrt(bs)/sigma
+  list(lambda=lambda,conv=betam$convergence,intercept=intercept,beta=beta,bs=bs,fitvalues=fitvalues[,1])
+}
+
+
+LAMLPE <- function(formula,data,lambda=NULL,lambdas=c(0,10^seq(-3,5,length=100)),k=10,seed){
+  dat0 <- model.frame(formula,data)
+  y <- dat0[,1]
+  n <- length(y)
+  x0 <- rep(1,n)
+  sigma <- c(1,apply(dat0[,-1], 2, sd))
+  sigmaa <- diag(1/sigma)
+  x1 <- as.matrix(cbind(x0,dat0[,-1]))
+  x <- x1%*%sigmaa
+  beta0 <- rep(0,dim(x)[2])
+  center0 <- rep(0,dim(x)[2])
+  if(is.null(lambda)){
+  cvs <- NULL
+  if(!missing(seed)) set.seed(seed)
+  folds <- CV_testlist(nfold = k,N = n)
+  y_cv <- dat0[,1][unlist(folds)]
+  for (i in lambdas) {
+    predict_values <- NULL
+    for(j in 1:k){
+      fold_test <- dat0[folds[[j]],]      
+      fold_train <- dat0[-folds[[j]],] 
+      
+      tr_y <- fold_train[,1]
+      tr_x0 <- rep(1,length(tr_y))
+      tr_sigma <- c(1,apply(fold_train[,-1],2,sd))
+      tr_sigmaa <- diag(1/tr_sigma)
+      tr_x1 <- as.matrix(cbind(tr_x0,fold_train[,-1]))
+      tr_x <- tr_x1%*%tr_sigmaa
+      tr_beta0 <- rep(0,dim(tr_x)[2])
+      tr_center0 <- rep(0,dim(tr_x)[2])
+      
+      tr_betam0 <- optim(tr_beta0[1:2],fn=loglh,gr=dloglh,x=cbind(tr_x[,1],apply(tr_x[,-1],1,sum)),y=tr_y,k=0,c=tr_center0[1:2],method="BFGS",control = list(reltol=10^-30,maxit=1000))
+      tr_beta00 <- tr_betam0$par
+      tr_centre <- c(tr_beta00[1],rep(tr_beta00[2],dim(tr_x[,-1])[2]))
+      
+      tr_betam <- optim(tr_beta0,fn=loglh,gr=dloglh,x=tr_x,y=tr_y,k=i,c=tr_centre,method="BFGS",control = list(reltol=10^-30,maxit=1000))
+      tr_beta <- tr_betam$par
+      beta <- tr_beta/tr_sigma
+      
+      te_x <- as.matrix(fold_test[,-1])
+      predict_value <- exp(te_x %*% beta[-1] + beta[1])/(1+exp(te_x %*% beta[-1] + beta[1]))
+      predict_values <- c(predict_values,predict_value)
+    }
+    cvi <- lloglh(y=y_cv,p=predict_values)
+    cvs <- c(cvs,cvi)
+  }
+  lambda <- lambdas[which.min(cvs)]
+  }
+  
+  betam0 <- optim(beta0[1:2],fn=loglh,gr=dloglh,x=cbind(x[,1],apply(x[,-1],1,sum)),y=y,k=0,c=center0[1:2],method="BFGS",control = list(reltol=10^-30,maxit=1000))
+  beta00 <- betam0$par
+  centre <- c(beta00[1],rep(beta00[2],dim(x[,-1])[2]))
+  
+  betam <- optim(beta0,fn=loglh,gr=dloglh,x=x,y=y,k=lambda,c=centre,method="BFGS",control = list(reltol=10^-30,maxit=1000))
+  beta <- betam$par
+  beta <- beta/sigma
+  fitvalues <- exp(x1%*%beta)/(1+exp(x1%*%beta))
+  intercept <- beta[1]
+  W <- diag(fitvalues[,1]*(1-fitvalues[,1]))
+  d4 <- dim(x)[2]
+  dl <- matrix(rep(0,d4*2),nrow=d4,ncol=2)
+  for (g in 1:d4) {
+    if(g<2) dl[g,g] <- 1
+    else dl[g,2] <- 1
+  }
+  kk <- c(0,rep(lambda,(d4-1)))
+  xc <- x%*%dl
+  H <- solve(t(x)%*%W%*%x + diag(kk))%*%(t(x)%*%W%*%x + diag(kk)%*%dl%*%solve(t(xc)%*%W%*%xc)%*%t(xc)%*%W%*%x)
+  covb <- H%*%solve(t(x)%*%W%*%x)%*%t(H)
+  bs <- diag(covb)
+  bs <- sqrt(bs)/sigma
+  list(centre=centre,lambda=lambda,conv=betam$convergence,intercept=intercept,beta=beta,bs=bs,fitvalues=fitvalues[,1])
+}
